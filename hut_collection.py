@@ -7,6 +7,12 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 import time
 from datetime import datetime
+import pickle
+import os
+import concurrent.futures
+import random
+from tqdm import tqdm
+import logging
 
 
 class availability:
@@ -468,34 +474,109 @@ class Hut:
 class HutCollection:
     base_url = "https://www.hut-reservation.org/reservation/book-hut/"
     huts = {}
+    cache_file = "hut_cache.pkl"
 
-    def __init__(self):
-        self._parse_huts()
+    def __init__(self, use_cache=True):
+        self.use_cache = use_cache
+        # Set up logging
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s - %(levelname)s - %(message)s',
+            filename='hut_scraping.log'
+        )
+        self.logger = logging.getLogger('HutCollection')
+        
+        # Load from cache if available and requested
+        if use_cache and os.path.exists(self.cache_file):
+            self._load_from_cache()
+        else:
+            self._parse_huts()
 
-    def _parse_huts(self, num_huts=2):#439):
-        """
-        Parse huts from the base URL and add them to the collection
-        Args:
-            num_huts: Number of huts to parse (default 439)
-        """
-        for i in range(1, num_huts + 1):
+    def _load_from_cache(self):
+        """Load huts from cache file if it exists"""
+        try:
+            with open(self.cache_file, 'rb') as f:
+                self.huts = pickle.load(f)
+                self.logger.info(f"Loaded {len(self.huts)} huts from cache")
+                print(f"Loaded {len(self.huts)} huts from cache")
+        except Exception as e:
+            self.logger.error(f"Error loading from cache: {str(e)}")
+            print(f"Error loading from cache: {str(e)}")
+            self.huts = {}
+            self._parse_huts()
+
+    def _save_to_cache(self):
+        """Save huts to cache file"""
+        try:
+            with open(self.cache_file, 'wb') as f:
+                pickle.dump(self.huts, f)
+                self.logger.info(f"Saved {len(self.huts)} huts to cache")
+        except Exception as e:
+            self.logger.error(f"Error saving to cache: {str(e)}")
+            print(f"Error saving to cache: {str(e)}")
+
+    def _parse_single_hut(self, hut_id):
+        """Parse a single hut by ID with retry mechanism"""
+        max_retries = 3
+        retry_delay = 2  # Initial delay in seconds
+        
+        for attempt in range(max_retries):
             try:
                 # Construct URL with leading zeros (e.g., 001, 002, etc.)
-                hut_id = str(i)
                 url = f"{self.base_url}{hut_id}/wizard/"
                 
-                print(f"Parsing hut {i}/{num_huts}: {url}")
                 hut = Hut(url)
                 
-                if hut.name != "Name not found":  # Only add if we successfully parsed the hut
-                    self.huts[hut.name] = hut
-                    print(f"Successfully added hut: {hut.name}")
+                if hut.name != "Name not found":  # Only return if we successfully parsed the hut
+                    return hut
                 else:
-                    print(f"Skipping hut {i} - name not found")
+                    self.logger.warning(f"Skipping hut {hut_id} - name not found")
+                    return None
                     
             except Exception as e:
-                print(f"Error parsing hut {i}: {str(e)}")
-                continue
+                self.logger.error(f"Error parsing hut {hut_id} (attempt {attempt+1}/{max_retries}): {str(e)}")
+                if attempt < max_retries - 1:
+                    # Exponential backoff with jitter
+                    sleep_time = retry_delay * (2 ** attempt) + random.uniform(0, 1)
+                    time.sleep(sleep_time)
+                else:
+                    self.logger.error(f"Failed to parse hut {hut_id} after {max_retries} attempts")
+                    return None
+
+    def _parse_huts(self, num_huts=5, max_workers=4):#439, max_workers=4):
+        """
+        Parse huts from the base URL and add them to the collection using parallel processing
+        Args:
+            num_huts: Number of huts to parse (default 439)
+            max_workers: Maximum number of parallel workers (default 4)
+        """
+        # Create a list of hut IDs to process
+        hut_ids = [str(i) for i in range(1, num_huts + 1)]
+        
+        # Process huts in parallel
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # Submit all tasks and create a dictionary mapping futures to hut_ids
+            future_to_hut_id = {executor.submit(self._parse_single_hut, hut_id): hut_id for hut_id in hut_ids}
+            
+            # Process results as they complete with a progress bar
+            with tqdm(total=len(hut_ids), desc="Parsing huts") as pbar:
+                for future in concurrent.futures.as_completed(future_to_hut_id):
+                    hut_id = future_to_hut_id[future]
+                    try:
+                        hut = future.result()
+                        if hut:
+                            self.huts[hut.name] = hut
+                            self.logger.info(f"Successfully added hut: {hut.name}")
+                    except Exception as e:
+                        self.logger.error(f"Exception processing hut {hut_id}: {str(e)}")
+                    pbar.update(1)
+        
+        # Save to cache after parsing
+        if self.use_cache:
+            self._save_to_cache()
+        
+        self.logger.info(f"Finished parsing {len(self.huts)} huts")
+        print(f"Finished parsing {len(self.huts)} huts")
 
     def add_hut(self, hut):
         self.huts[hut.name] = hut
@@ -629,6 +710,67 @@ class HutCollection:
         """
         available_huts = self.get_all_available_huts(date)
         return sorted(available_huts, key=lambda x: x[1].places, reverse=True)
+
+    def refresh_hut(self, name):
+        """
+        Refresh data for a specific hut
+        Args:
+            name: Name of the hut to refresh
+        Returns:
+            True if successful, False otherwise
+        """
+        if name not in self.huts:
+            self.logger.warning(f"Hut '{name}' not found in collection")
+            return False
+            
+        try:
+            hut = self.huts[name]
+            hut_id = hut.id
+            
+            # Re-parse the hut
+            refreshed_hut = self._parse_single_hut(hut_id)
+            if refreshed_hut:
+                self.huts[name] = refreshed_hut
+                if self.use_cache:
+                    self._save_to_cache()
+                self.logger.info(f"Successfully refreshed hut: {name}")
+                return True
+            else:
+                self.logger.error(f"Failed to refresh hut: {name}")
+                return False
+        except Exception as e:
+            self.logger.error(f"Error refreshing hut {name}: {str(e)}")
+            return False
+            
+    def refresh_all_huts(self, max_workers=4):
+        """
+        Refresh data for all huts in the collection
+        Args:
+            max_workers: Maximum number of parallel workers
+        """
+        hut_ids = [hut.id for hut in self.huts.values()]
+        
+        # Process huts in parallel
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # Submit all tasks and create a dictionary mapping futures to hut_ids
+            future_to_hut_id = {executor.submit(self._parse_single_hut, hut_id): hut_id for hut_id in hut_ids}
+            
+            # Process results as they complete with a progress bar
+            with tqdm(total=len(hut_ids), desc="Refreshing huts") as pbar:
+                for future in concurrent.futures.as_completed(future_to_hut_id):
+                    hut_id = future_to_hut_id[future]
+                    try:
+                        hut = future.result()
+                        if hut:
+                            self.huts[hut.name] = hut
+                            self.logger.info(f"Successfully refreshed hut: {hut.name}")
+                    except Exception as e:
+                        self.logger.error(f"Exception refreshing hut {hut_id}: {str(e)}")
+                    pbar.update(1)
+        
+        # Save to cache after refreshing
+        if self.use_cache:
+            self._save_to_cache()
 
 
 
