@@ -566,7 +566,7 @@ class HutCollection:
                     self.logger.error(f"Failed to parse hut {hut_id} after {max_retries} attempts")
                     return None
 
-    def _parse_huts(self, num_huts=5, max_workers=4):
+    def _parse_huts(self, num_huts=439, max_workers=4):
         """
         Parse huts from the base URL and add them to the collection using parallel processing
         Args:
