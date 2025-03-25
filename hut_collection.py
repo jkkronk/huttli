@@ -472,6 +472,21 @@ class Hut:
             return None
         return max(self.availability, key=lambda x: x.places)
 
+    # Add this method to make Hut objects picklable
+    def __getstate__(self):
+        """Return state values to be pickled."""
+        state = self.__dict__.copy()
+        # Remove the soup attribute which contains BeautifulSoup objects that may not pickle well
+        if 'soup' in state:
+            del state['soup']
+        return state
+
+    def __setstate__(self, state):
+        """Restore state from the unpickled state values."""
+        self.__dict__.update(state)
+        # The soup attribute will be None after unpickling
+        self.soup = None
+
 class HutCollection:
     base_url = "https://www.hut-reservation.org/reservation/book-hut/"
     huts = {}
@@ -531,8 +546,14 @@ class HutCollection:
     def _save_to_cache(self):
         """Save huts to cache file"""
         try:
+            # Create a simplified version of huts for pickling
+            pickle_data = {}
+            for name, hut in self.huts.items():
+                # Create a copy without problematic attributes if needed
+                pickle_data[name] = hut
+                
             with open(self.cache_file, 'wb') as f:
-                pickle.dump(self.huts, f)
+                pickle.dump(pickle_data, f, protocol=pickle.HIGHEST_PROTOCOL)
                 self.logger.info(f"Saved {len(self.huts)} huts to cache")
         except Exception as e:
             self.logger.error(f"Error saving to cache: {str(e)}")
