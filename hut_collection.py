@@ -291,23 +291,11 @@ class Hut:
                 
                 if not calendar_found:
                     print("Calendar could not be found after multiple attempts")
-                    # Take screenshot for debugging
-                    try:
-                        driver.save_screenshot("calendar_not_found.png")
-                        print("Screenshot saved as calendar_not_found.png")
-                    except:
-                        print("Could not save screenshot")
                     return self.soup
 
             except Exception as calendar_error:
                 print(f"Could not load calendar: {calendar_error}")
                 print(f"Current URL: {driver.current_url}")
-                # Take screenshot for debugging
-                try:
-                    driver.save_screenshot("calendar_error.png")
-                    print("Screenshot saved as calendar_error.png")
-                except:
-                    print("Could not save screenshot")
                 self.availability = []
             
             # Updated name selectors based on the HTML structure
@@ -944,6 +932,11 @@ class HutCollection:
     def _background_update_worker(self):
         """Worker function for background updates"""
         self.logger.info("Background update worker started")
+        
+        # Add debug logging to track execution
+        print("Background update worker started with interval:", self.update_interval)
+        self.logger.info(f"Update interval set to {self.update_interval} seconds")
+        
         while not self.stop_update_thread:
             try:
                 # Sleep first to avoid immediate update after initialization
@@ -956,16 +949,22 @@ class HutCollection:
                     break
                     
                 self.logger.info("Starting background update of hut data")
+                print("Starting background update of hut data")  # Add visible console output
+                
                 # Use a small number of workers to avoid overloading the server
                 self._parse_huts(max_workers=2)
+                
                 self.logger.info("Completed background update of hut data")
+                print("Completed background update of hut data")  # Add visible console output
                 
             except Exception as e:
                 self.logger.error(f"Error in background update: {str(e)}")
+                print(f"Error in background update: {str(e)}")  # Add visible console output
                 # Sleep for a while before retrying after an error
                 time.sleep(60)
                 
         self.logger.info("Background update worker stopped")
+        print("Background update worker stopped")  # Add visible console output
 
 
 

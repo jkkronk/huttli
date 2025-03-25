@@ -32,23 +32,33 @@ def get_hut_collection():
     os.makedirs(DATA_DIR, exist_ok=True)
     
     # Check if we have a cached version
-    if os.path.exists(HUT_DATA_FILE):
+    if os.path.exists(HUT_DATA_FILE) and os.path.exists(CACHE_METADATA_FILE):
         try:
             # Check cache metadata to see if it's still valid
-            if os.path.exists(CACHE_METADATA_FILE):
-                with open(CACHE_METADATA_FILE, 'r') as f:
-                    metadata = json.load(f)
-                    last_update = metadata.get('timestamp', 0)
-                    current_time = time.time()
+            with open(CACHE_METADATA_FILE, 'r') as f:
+                metadata = json.load(f)
+                last_update = metadata.get('timestamp', 0)
+                current_time = time.time()
+                
+                # If cache is still valid, load from it
+                if current_time - last_update < CACHE_DURATION:
+                    # Create a new HutCollection with background updates
+                    hut_collection = HutCollection(use_cache=True, background_updates=True)
                     
-                    # If cache is still valid, load from it
-                    if current_time - last_update < CACHE_DURATION:
-                        with open(HUT_DATA_FILE, 'r') as f:
-                            hut_data = json.load(f)
-                            hut_collection = HutCollection(use_cache=True)
-                            return hut_collection
+                    # Load the cached hut data
+                    with open(HUT_DATA_FILE, 'r') as f:
+                        hut_data = json.load(f)
+                        
+                        # If the hut_collection doesn't have any huts yet, load them from cache
+                        if not hut_collection.huts and hut_data:
+                            print(f"Loading {len(hut_data)} huts from JSON cache")
+                            # You might need to implement a method in HutCollection to load from JSON
+                            # For now, we'll return the collection and let background updates handle it
+                    
+                    return hut_collection
             
             # If we get here, cache is expired or metadata is missing
+            print("Cache expired, updating hut collection")
             return update_hut_collection()
             
         except Exception as e:
@@ -56,6 +66,7 @@ def get_hut_collection():
             return update_hut_collection()
     else:
         # No cache exists, create a new collection
+        print("No cache found, creating new hut collection")
         return update_hut_collection()
 
 def update_hut_collection():
@@ -65,7 +76,7 @@ def update_hut_collection():
         Updated HutCollection object
     """
     try:
-        # Create a new HutCollection
+        # Create a new HutCollection with background updates enabled
         hut_collection = HutCollection(use_cache=True, background_updates=True)
         
         # Save to cache
@@ -75,7 +86,7 @@ def update_hut_collection():
     except Exception as e:
         st.sidebar.error(f"Error updating hut collection: {e}")
         # Try to create a minimal collection as fallback
-        return HutCollection(use_cache=False)
+        return HutCollection(use_cache=False, background_updates=True)
 
 def save_huts_to_cache(hut_collection):
     """
@@ -87,29 +98,51 @@ def save_huts_to_cache(hut_collection):
         # Create data directory if it doesn't exist
         os.makedirs(DATA_DIR, exist_ok=True)
         
-        # Save hut data
+        # Save hut data in a serializable format
+        hut_data = {}
+        for name, hut in hut_collection.huts.items():
+            # Convert each hut to a dictionary with essential data
+            hut_dict = {
+                "name": hut.name,
+                "id": hut.id,
+                "coordinates": hut.coordinates,
+                "website": hut.website,
+                "img_url": hut.img_url,
+                "availability": []
+            }
+            
+            # Add availability data
+            for avail in hut.availability:
+                hut_dict["availability"].append({
+                    "date": avail.get_iso_date(),
+                    "places": avail.places
+                })
+            
+            hut_data[name] = hut_dict
+        
+        # Save the actual hut data instead of just a placeholder
         with open(HUT_DATA_FILE, 'w') as f:
-            # Convert hut collection to serializable format if needed
-            # For now, we're just saving a placeholder
-            json.dump({"status": "cached"}, f)
+            json.dump(hut_data, f, indent=2)
         
         # Update metadata with current timestamp
         with open(CACHE_METADATA_FILE, 'w') as f:
             metadata = {
                 "timestamp": time.time(),
-                "version": "1.0"
+                "version": "1.0",
+                "hut_count": len(hut_collection.huts)
             }
-            json.dump(metadata, f)
+            json.dump(metadata, f, indent=2)
             
     except Exception as e:
         st.sidebar.error(f"Error saving to cache: {e}")
 
 def main():
     st.title("Are there places in SAC huts available?")
+    
     # Initialize or load hut collection
     hut_collection = get_hut_collection()
     hut_collection.background_updates = True
-    hut_collection.update_interval = 1#3600
+    hut_collection.update_interval = 3600 * 2  # every 2 hours
     hut_collection.start_background_updates()
     save_huts_to_cache(hut_collection)
     
